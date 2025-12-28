@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useCallback } from 'react';
 
 // -------------------------------------------------------------------------
-// 核心圖示 (使用內嵌 SVG 確保不依賴外部套件，外觀更精緻)
+// 核心圖示 (內嵌 SVG)
 // -------------------------------------------------------------------------
 const Icons = {
   Sparkles: () => (
@@ -25,43 +25,59 @@ const Icons = {
 };
 
 // -------------------------------------------------------------------------
-// 常數與邏輯
+// 固定常數定義
 // -------------------------------------------------------------------------
-const VERSION = "v1.0";
-const SA_READY_KEYWORDS = ["抵達門市"];
-const SA_CLOSED_KEYWORDS = ["顧客領回"];
+const VERSION = "v1.1";
+
+// 精簡後的固定狀態
+const SA_READY_STATUS = ["抵達門市", "工程師完成"];
+const SA_CLOSED_STATUS = ["顧客領回"];
+
+/**
+ * 強大的 CSV 行解析器，支援處理引號內的逗號
+ */
+const splitCsvLine = (line, delimiter) => {
+  const result = [];
+  let cur = '';
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i];
+    if (char === '"') {
+      inQuotes = !inQuotes;
+    } else if (char === delimiter && !inQuotes) {
+      result.push(cur.trim());
+      cur = '';
+    } else {
+      cur += char;
+    }
+  }
+  result.push(cur.trim());
+  return result.map(s => s.replace(/^"|"$/g, '').trim());
+};
 
 const parseCSV = (text) => {
   if (!text) return { data: [], headers: [] };
-  const cleanText = text.replace(/^\uFEFF/, "").replace(/\r/g, "");
-  const lines = cleanText.split("\n").filter(line => line.trim() !== "");
-  if (lines.length === 0) return { data: [], headers: [] };
+  // 統一換行符並過濾空行
+  const lines = text.replace(/^\uFEFF/, "").replace(/\r/g, "").split("\n").filter(l => l.trim());
+  if (!lines.length) return { data: [], headers: [] };
 
-  let headerIndex = -1;
-  const keywords = ["採購", "Purchase", "單號", "Order", "Status", "狀態"];
-  for (let i = 0; i < lines.length; i++) {
-    if (keywords.some(kw => lines[i].includes(kw))) { headerIndex = i; break; }
-  }
-  if (headerIndex === -1) headerIndex = 0;
+  const delimiter = lines[0].includes("\t") ? "\t" : ",";
+  const headers = splitCsvLine(lines[0], delimiter).map(h => h.replace(/[^\x20-\x7E\u4E00-\u9FFF]/g, ''));
 
-  const headerLine = lines[headerIndex];
-  const delimiter = headerLine.includes("\t") ? "\t" : ",";
-  const clean = (s) => s ? s.replace(/^"|"$/g, '').trim() : "";
-  const rawHeaders = headerLine.split(delimiter).map(clean);
-  const headers = rawHeaders.map(h => h.replace(/[^\x20-\x7E\u4E00-\u9FFF]/g, ''));
-
-  const rows = lines.slice(headerIndex + 1).map(line => {
-    const values = line.split(delimiter).map(clean);
+  const data = lines.slice(1).map(line => {
+    const vals = splitCsvLine(line, delimiter);
     const obj = {};
-    headers.forEach((h, i) => { if (h) obj[h] = values[i] || ""; });
+    headers.forEach((h, i) => { if (h) obj[h] = vals[i] || ""; });
     return obj;
   });
-  return { data: rows, headers };
+  return { data, headers };
 };
 
 const App = () => {
   const [saData, setSaData] = useState([]);
   const [gsxData, setGsxData] = useState([]);
+  const [saHeaders, setSaHeaders] = useState([]);
+  const [gsxHeaders, setGsxHeaders] = useState([]);
   const [saFileName, setSaFileName] = useState("");
   const [gsxFileName, setGsxFileName] = useState("");
   const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -89,46 +105,67 @@ const App = () => {
       const buffer = event.target.result;
       let decoder = new TextDecoder("utf-8");
       let content = decoder.decode(buffer);
-      if (!content.includes("採購") && !content.includes("單號") && !content.includes("Status") && buffer.byteLength > 10) {
+      
+      // 改進編碼偵測條件：只保留中文關鍵字偵測
+      const isUtf8 = content.includes("單號") || content.includes("維修") || content.includes("採購");
+      if (!isUtf8 && buffer.byteLength > 10) {
         content = new TextDecoder("big5").decode(buffer);
       }
+
       const res = parseCSV(content);
-      if (type === 'SA') setSaData(res.data); else setGsxData(res.data);
-      setStatusMessage(`${type === 'SA' ? 'SA' : 'GSX'} 載入完成 (${res.data.length} 筆)`);
+      if (type === 'SA') {
+        setSaData(res.data);
+        setSaHeaders(res.headers);
+      } else {
+        setGsxData(res.data);
+        setGsxHeaders(res.headers);
+      }
+      setStatusMessage(`${type} 載入成功 (${res.data.length} 筆)`);
     };
     reader.readAsArrayBuffer(file);
   };
 
   const analyze = () => {
-    if (!saData.length || !gsxData.length) return setStatusMessage("❌ 請先載入兩個檔案");
+    if (!saData.length || !gsxData.length) return setStatusMessage("❌ 請載入檔案");
     setIsAnalyzing(true);
-    setStatusMessage("比對數據中...");
+    setStatusMessage("分析中...");
     setSelectedIDs(new Set());
 
     setTimeout(() => {
-      const gsxH = Object.keys(gsxData[0] || {});
-      const poH = gsxH.find(h => h === "採購訂單" || h.includes("Purchase") || h.includes("PO"));
-      const idH = gsxH.find(h => h === "維修" || h === "維修 ID" || h.includes("Repair ID"));
-      const statusH = gsxH.find(h => h === "維修狀態" || h.includes("Repair Status") || h.includes("Status"));
+      // 1. 自動尋找 GSX 關鍵欄位 (僅保留中文判斷)
+      const poH = gsxHeaders.find(h => h === "採購訂單");
+      const idH = gsxHeaders.find(h => h === "維修" || h === "維修 ID");
+      const statusH = gsxHeaders.find(h => h === "維修狀態");
+
+      if (!poH) {
+        setIsAnalyzing(false);
+        return setStatusMessage("❌ GSX 找不到「採購訂單」欄位，請檢查檔案是否正確");
+      }
 
       const gsxMap = {};
       gsxData.forEach(row => {
-        const val = row[poH];
-        if (val) {
-          const key = val.toUpperCase().trim().replace(/\s+/g, '').split('-')[0];
-          if (key) gsxMap[key] = row;
+        const po = row[poH];
+        if (po) {
+          // 清洗 PO，只留 "-" 之前的部分
+          const key = po.toUpperCase().split('-')[0].trim();
+          gsxMap[key] = row;
         }
       });
 
-      const saH = Object.keys(saData[0] || {});
-      const sKey = saH.find(h => h === "狀態") || saH.find(h => h.includes("狀態") && !h.includes("保固")) || "狀態";
-      const rKey = saH.find(h => h === "單號") || saH.find(h => h.includes("單號")) || "單號";
+      // 2. 自動尋找 SA 關鍵欄位 (僅保留中文判斷)
+      const rKey = saHeaders.find(h => h === "單號");
+      const sKey = saHeaders.find(h => h === "狀態");
+
+      if (!rKey || !sKey) {
+        setIsAnalyzing(false);
+        return setStatusMessage(`❌ SA 報表格式錯誤 (偵測到 單號:[${rKey || "找不到"}] 狀態:[${sKey || "找不到"}])`);
+      }
 
       let un = [], nr = [], all = [], matches = 0;
       saData.forEach(sa => {
         const rma = sa[rKey], saS = sa[sKey];
         if (!rma || !saS) return;
-        const key = rma.toUpperCase().trim().replace(/\s+/g, '').split('-')[0];
+        const key = rma.toUpperCase().split('-')[0].trim();
         const gsx = gsxMap[key];
 
         if (gsx) {
@@ -137,13 +174,17 @@ const App = () => {
           const gID = (idH ? gsx[idH] : "-") || "-";
           let record = { id: Math.random().toString(36), gsxID: gID, rmaID: rma, saStatus: saS, gsxStatus: gsxS, isAnomaly: false };
 
-          const isSaClosed = SA_CLOSED_KEYWORDS.some(k => saS.includes(k));
-          const isGsxClosed = gsxS.includes("已由系統關閉") || gsxS.includes("Closed");
-          if (isSaClosed && !isGsxClosed) { record.isAnomaly = true; un.push(record); }
+          const isGsxClosed = gsxS.includes("已由系統關閉");
+          const isGsxReady = gsxS.includes("待取件");
 
-          const isSaReady = SA_READY_KEYWORDS.some(k => saS.includes(k));
-          const isGsxReady = gsxS.includes("待取件") || gsxS.includes("Pickup") || isGsxClosed;
-          if (isSaReady && !isGsxReady) { record.isAnomaly = true; nr.push(record); }
+          // 邏輯 A: 未關單 (SA 已領回，但 GSX 沒關)
+          if (SA_CLOSED_STATUS.includes(saS) && !isGsxClosed) {
+            record.isAnomaly = true; un.push(record);
+          }
+          // 邏輯 B: 未改待取 (SA 已到店/完成，但 GSX 沒改狀態)
+          if (SA_READY_STATUS.includes(saS) && !isGsxReady && !isGsxClosed) {
+            record.isAnomaly = true; nr.push(record);
+          }
 
           all.push(record);
         }
@@ -151,9 +192,9 @@ const App = () => {
 
       setResults({ unclosed: un, notReady: nr, all });
       setIsAnalyzing(false);
-      setStatusMessage(`✅ 比對完成：發現 ${matches} 筆對應`);
+      setStatusMessage(`✅ 分析完成：成功匹配 ${matches} 筆數據`);
       setSelectedIDs(new Set(un.map(r => r.id)));
-    }, 600);
+    }, 400);
   };
 
   const exportCSV = () => {
@@ -171,17 +212,14 @@ const App = () => {
 
   return (
     <div className="min-h-screen bg-[#0F2027] text-white p-4 md:p-10 font-sans relative overflow-x-hidden selection:bg-cyan-500/30">
-      {/* 蘋果風格背景裝飾 */}
-      <div className="fixed -top-40 -left-40 w-[500px] h-[500px] bg-cyan-500/10 blur-[120px] rounded-full pointer-events-none animate-pulse" />
+      <div className="fixed -top-40 -left-40 w-[500px] h-[500px] bg-cyan-500/10 blur-[120px] rounded-full pointer-events-none" />
       <div className="fixed top-1/2 -right-40 w-[400px] h-[400px] bg-purple-600/10 blur-[100px] rounded-full pointer-events-none" />
 
       <div className="max-w-6xl mx-auto space-y-8 relative z-10">
-        
-        {/* 頂部標題與檔案選擇 (玻璃卡片) */}
-        <div className="backdrop-blur-3xl bg-white/[0.06] border border-white/[0.12] rounded-[32px] p-8 shadow-2xl overflow-hidden relative group">
+        <div className="backdrop-blur-3xl bg-white/[0.06] border border-white/[0.12] rounded-[32px] p-8 shadow-2xl relative group">
           <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 mb-10">
             <div className="flex items-center gap-5">
-              <div className="w-14 h-14 bg-gradient-to-br from-cyan-400 to-blue-600 rounded-2xl flex items-center justify-center shadow-xl shadow-cyan-500/20 rotate-3 group-hover:rotate-0 transition-transform duration-500">
+              <div className="w-14 h-14 bg-gradient-to-br from-cyan-400 to-blue-600 rounded-2xl flex items-center justify-center shadow-xl shadow-cyan-500/20 rotate-3 transition-transform">
                 <Icons.Sparkles />
               </div>
               <div>
@@ -192,8 +230,8 @@ const App = () => {
             
             <div className="flex bg-black/40 p-1.5 rounded-2xl border border-white/5 backdrop-blur-md">
               <button onClick={() => setSelectedTab(0)} className={`px-5 py-2.5 rounded-xl text-xs font-bold transition-all ${selectedTab === 0 ? 'bg-white/10 text-white shadow-xl' : 'text-white/30 hover:text-white/50'}`}>未關單 ({results.unclosed.length})</button>
-              <button onClick={() => setSelectedTab(1)} className={`px-5 py-2.5 rounded-xl text-xs font-bold transition-all ${selectedTab === 1 ? 'bg-white/10 text-white shadow-xl' : 'text-white/30 hover:text-white/50'}`}>待改取 ({results.notReady.length})</button>
-              <button onClick={() => setSelectedTab(2)} className={`px-5 py-2.5 rounded-xl text-xs font-bold transition-all ${selectedTab === 2 ? 'bg-white/10 text-white shadow-xl' : 'text-white/30 hover:text-white/50'}`}>所有對應 ({results.all.length})</button>
+              <button onClick={() => setSelectedTab(1)} className={`px-5 py-2.5 rounded-xl text-xs font-bold transition-all ${selectedTab === 1 ? 'bg-white/10 text-white shadow-xl' : 'text-white/30 hover:text-white/50'}`}>未改待取 ({results.notReady.length})</button>
+              <button onClick={() => setSelectedTab(2)} className={`px-5 py-2.5 rounded-xl text-xs font-bold transition-all ${selectedTab === 2 ? 'bg-white/10 text-white shadow-xl' : 'text-white/30 hover:text-white/50'}`}>所有 ({results.all.length})</button>
             </div>
           </div>
 
@@ -210,19 +248,17 @@ const App = () => {
               {isAnalyzing ? <div className="w-5 h-5 border-2 border-white/20 border-t-white rounded-full animate-spin" /> : <Icons.Sparkles />}
               開始分析數據
             </button>
-            
             <div className="flex-[2] bg-black/40 border border-white/10 rounded-2xl px-6 py-4 flex items-center gap-3 text-sm font-mono text-cyan-200/70 shadow-inner">
-              <span className="opacity-30">Status:</span> {statusMessage}
+               {statusMessage}
             </div>
           </div>
         </div>
 
-        {/* 結果表格 (玻璃卡片) */}
         <div className="backdrop-blur-2xl bg-black/40 border border-white/10 rounded-[32px] overflow-hidden shadow-2xl flex flex-col min-h-[500px]">
           {selectedTab === 0 && currentList.length > 0 && (
             <div className="p-5 flex justify-end border-b border-white/5 bg-white/5">
-              <button onClick={exportCSV} className="px-6 py-3 bg-emerald-500/20 border border-emerald-500/30 text-emerald-400 rounded-2xl text-xs font-black flex items-center gap-3 hover:bg-emerald-500/30 transition-all shadow-lg shadow-emerald-500/10 active:scale-95">
-                <Icons.Download /> 匯出 GSX 上傳報表 ({selectedIDs.size})
+              <button onClick={exportCSV} className="px-6 py-3 bg-emerald-500/20 border border-emerald-500/30 text-emerald-400 rounded-2xl text-xs font-black flex items-center gap-3 hover:bg-emerald-500/30 transition-all active:scale-95">
+                <Icons.Download /> 匯出清單 ({selectedIDs.size})
               </button>
             </div>
           )}
@@ -231,7 +267,7 @@ const App = () => {
             {currentList.length === 0 ? (
               <div className="h-[400px] flex flex-col items-center justify-center opacity-10">
                 <Icons.File />
-                <p className="mt-4 font-black tracking-widest uppercase">Waiting for Data</p>
+                <p className="mt-4 font-black tracking-widest uppercase">No Records</p>
               </div>
             ) : (
               <table className="w-full text-left border-collapse min-w-[800px]">
@@ -240,9 +276,9 @@ const App = () => {
                     {selectedTab === 0 && <th className="p-6 w-16 text-center">選</th>}
                     <th className="p-6">GSX 單號</th>
                     <th className="p-6">RMA 單號</th>
-                    <th className="p-6">SA 目前狀態</th>
-                    <th className="p-6">GSX 現有狀態</th>
-                    <th className="p-6 text-center w-24">檢測</th>
+                    <th className="p-6">SA 狀態</th>
+                    <th className="p-6">GSX 狀態</th>
+                    <th className="p-6 text-center w-24">狀態</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-white/5">
@@ -262,16 +298,14 @@ const App = () => {
                       )}
                       <td className="p-6">
                         <div className="flex items-center gap-3">
-                          <span className="font-mono text-sm font-bold cursor-pointer hover:text-cyan-400 transition-colors" onClick={() => copyToClipboard(r.gsxID)}>{r.gsxID}</span>
-                          {r.gsxID !== "-" && (
-                            <a href={`https://gsx2.apple.com/repairs/${r.gsxID}`} target="_blank" rel="noreferrer" className="opacity-0 group-hover:opacity-100 p-1.5 bg-white/10 rounded-lg hover:bg-white/20 transition-all active:scale-90"><Icons.External /></a>
-                          )}
+                          <span className="font-mono text-sm font-bold cursor-pointer hover:text-cyan-400" onClick={() => copyToClipboard(r.gsxID)}>{r.gsxID}</span>
+                          <a href={`https://gsx2.apple.com/repairs/${r.gsxID}`} target="_blank" rel="noreferrer" className="opacity-0 group-hover:opacity-100 p-1.5 bg-white/10 rounded-lg"><Icons.External /></a>
                         </div>
                       </td>
                       <td className="p-6">
                         <div className="flex items-center gap-3">
-                          <span className="text-white/60 text-sm font-medium cursor-pointer hover:text-cyan-400 transition-colors" onClick={() => copyToClipboard(r.rmaID)}>{r.rmaID}</span>
-                          <a href={`https://rma0.studioarma.com/rma/?m=ticket-common&op=view&id=${r.rmaID}`} target="_blank" rel="noreferrer" className="opacity-0 group-hover:opacity-100 p-1.5 bg-white/10 rounded-lg hover:bg-white/20 transition-all active:scale-90"><Icons.External /></a>
+                          <span className="text-white/60 text-sm font-medium cursor-pointer hover:text-cyan-400" onClick={() => copyToClipboard(r.rmaID)}>{r.rmaID}</span>
+                          <a href={`https://rma0.studioarma.com/rma/?m=ticket-common&op=view&id=${r.rmaID}`} target="_blank" rel="noreferrer" className="opacity-0 group-hover:opacity-100 p-1.5 bg-white/10 rounded-lg"><Icons.External /></a>
                         </div>
                       </td>
                       <td className="p-6">
@@ -281,7 +315,7 @@ const App = () => {
                       <td className="p-6 text-center">
                         <div className="flex justify-center">
                           {r.isAnomaly ? (
-                            <div className="text-red-500 drop-shadow-[0_0_8px_rgba(239,68,68,0.5)] animate-pulse"><Icons.Alert /></div>
+                            <div className="text-red-500 animate-pulse"><Icons.Alert /></div>
                           ) : (
                             <div className="text-emerald-500/40"><Icons.Check /></div>
                           )}
@@ -296,7 +330,6 @@ const App = () => {
         </div>
       </div>
 
-      {/* Toast */}
       {toast.show && (
         <div className="fixed bottom-12 left-1/2 -translate-x-1/2 z-50 animate-in fade-in slide-in-from-bottom-4 duration-300">
           <div className="bg-white text-black px-8 py-3 rounded-full font-black text-sm shadow-2xl flex items-center gap-3">
@@ -308,8 +341,8 @@ const App = () => {
       <style>{`
         .custom-scrollbar::-webkit-scrollbar { width: 8px; height: 8px; }
         .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
-        .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 20px; border: 2px solid transparent; background-clip: content-box; }
-        .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.15); border-radius: 20px; border: 2px solid transparent; background-clip: content-box; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 20px; }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.15); }
       `}</style>
     </div>
   );
