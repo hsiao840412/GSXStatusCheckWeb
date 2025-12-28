@@ -5,3 +5,5 @@
 ![TailwindCSS](https://img.shields.io/badge/Tailwind_CSS-38B2AC?style=flat-square&logo=tailwind-css&logoColor=white)
 
 [GSX-Status-Check](https://github.com/hsiao840412/GSX-Status-Check/) 的網頁版，擺脫系統依賴方便使用
+
+[點我](https://hsiao840412.github.io/GSXStatusCheckWeb/)就可以使用
