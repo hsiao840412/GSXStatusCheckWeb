@@ -57,7 +57,6 @@ const splitCsvLine = (line, delimiter) => {
 
 const parseCSV = (text) => {
   if (!text) return { data: [], headers: [] };
-  // 統一換行符並過濾空行
   const lines = text.replace(/^\uFEFF/, "").replace(/\r/g, "").split("\n").filter(l => l.trim());
   if (!lines.length) return { data: [], headers: [] };
 
@@ -97,7 +96,7 @@ const App = () => {
   };
 
   const handleFileUpload = (e, type) => {
-    const file = e.target.files[0];
+    const file = e.target.files?.[0];
     if (!file) return;
     type === 'SA' ? setSaFileName(file.name) : setGsxFileName(file.name);
     const reader = new FileReader();
@@ -106,7 +105,6 @@ const App = () => {
       let decoder = new TextDecoder("utf-8");
       let content = decoder.decode(buffer);
       
-      // 改進編碼偵測條件：只保留中文關鍵字偵測
       const isUtf8 = content.includes("單號") || content.includes("維修") || content.includes("採購");
       if (!isUtf8 && buffer.byteLength > 10) {
         content = new TextDecoder("big5").decode(buffer);
@@ -132,7 +130,6 @@ const App = () => {
     setSelectedIDs(new Set());
 
     setTimeout(() => {
-      // 1. 自動尋找 GSX 關鍵欄位 (僅保留中文判斷)
       const poH = gsxHeaders.find(h => h === "採購訂單");
       const idH = gsxHeaders.find(h => h === "維修" || h === "維修 ID");
       const statusH = gsxHeaders.find(h => h === "維修狀態");
@@ -146,13 +143,11 @@ const App = () => {
       gsxData.forEach(row => {
         const po = row[poH];
         if (po) {
-          // 清洗 PO，只留 "-" 之前的部分
           const key = po.toUpperCase().split('-')[0].trim();
           gsxMap[key] = row;
         }
       });
 
-      // 2. 自動尋找 SA 關鍵欄位 (僅保留中文判斷)
       const rKey = saHeaders.find(h => h === "單號");
       const sKey = saHeaders.find(h => h === "狀態");
 
@@ -177,11 +172,9 @@ const App = () => {
           const isGsxClosed = gsxS.includes("已由系統關閉");
           const isGsxReady = gsxS.includes("待取件");
 
-          // 邏輯 A: 未關單 (SA 已領回，但 GSX 沒關)
           if (SA_CLOSED_STATUS.includes(saS) && !isGsxClosed) {
             record.isAnomaly = true; un.push(record);
           }
-          // 邏輯 B: 未改待取 (SA 已到店/完成，但 GSX 沒改狀態)
           if (SA_READY_STATUS.includes(saS) && !isGsxReady && !isGsxClosed) {
             record.isAnomaly = true; nr.push(record);
           }
@@ -215,7 +208,7 @@ const App = () => {
       <div className="fixed -top-40 -left-40 w-[500px] h-[500px] bg-cyan-500/10 blur-[120px] rounded-full pointer-events-none" />
       <div className="fixed top-1/2 -right-40 w-[400px] h-[400px] bg-purple-600/10 blur-[100px] rounded-full pointer-events-none" />
 
-      <div className="max-w-6xl mx-auto space-y-8 relative z-10">
+      <div className="max-w-6xl mx-auto space-y-6 relative z-10">
         <div className="backdrop-blur-3xl bg-white/[0.06] border border-white/[0.12] rounded-[32px] p-8 shadow-2xl relative group">
           <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 mb-10">
             <div className="flex items-center gap-5">
@@ -226,12 +219,6 @@ const App = () => {
                 <h1 className="text-3xl font-black tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-white to-white/60">GSX 狀態檢查 WEB</h1>
                 <p className="text-[10px] opacity-40 font-bold uppercase tracking-[0.3em] mt-1">{VERSION}</p>
               </div>
-            </div>
-            
-            <div className="flex bg-black/40 p-1.5 rounded-2xl border border-white/5 backdrop-blur-md">
-              <button onClick={() => setSelectedTab(0)} className={`px-5 py-2.5 rounded-xl text-xs font-bold transition-all ${selectedTab === 0 ? 'bg-white/10 text-white shadow-xl' : 'text-white/30 hover:text-white/50'}`}>未關單 ({results.unclosed.length})</button>
-              <button onClick={() => setSelectedTab(1)} className={`px-5 py-2.5 rounded-xl text-xs font-bold transition-all ${selectedTab === 1 ? 'bg-white/10 text-white shadow-xl' : 'text-white/30 hover:text-white/50'}`}>未改待取 ({results.notReady.length})</button>
-              <button onClick={() => setSelectedTab(2)} className={`px-5 py-2.5 rounded-xl text-xs font-bold transition-all ${selectedTab === 2 ? 'bg-white/10 text-white shadow-xl' : 'text-white/30 hover:text-white/50'}`}>所有 ({results.all.length})</button>
             </div>
           </div>
 
@@ -254,6 +241,14 @@ const App = () => {
           </div>
         </div>
 
+        <div className="flex justify-center">
+          <div className="flex bg-black/40 p-1.5 rounded-2xl border border-white/5 backdrop-blur-md shadow-lg">
+            <button onClick={() => setSelectedTab(0)} className={`px-6 py-2.5 rounded-xl text-xs font-bold transition-all ${selectedTab === 0 ? 'bg-white/10 text-white shadow-xl' : 'text-white/30 hover:text-white/50'}`}>未關單 ({results.unclosed.length})</button>
+            <button onClick={() => setSelectedTab(1)} className={`px-6 py-2.5 rounded-xl text-xs font-bold transition-all ${selectedTab === 1 ? 'bg-white/10 text-white shadow-xl' : 'text-white/30 hover:text-white/50'}`}>未改待取 ({results.notReady.length})</button>
+            <button onClick={() => setSelectedTab(2)} className={`px-6 py-2.5 rounded-xl text-xs font-bold transition-all ${selectedTab === 2 ? 'bg-white/10 text-white shadow-xl' : 'text-white/30 hover:text-white/50'}`}>所有 ({results.all.length})</button>
+          </div>
+        </div>
+
         <div className="backdrop-blur-2xl bg-black/40 border border-white/10 rounded-[32px] overflow-hidden shadow-2xl flex flex-col min-h-[500px]">
           {selectedTab === 0 && currentList.length > 0 && (
             <div className="p-5 flex justify-end border-b border-white/5 bg-white/5">
@@ -267,17 +262,17 @@ const App = () => {
             {currentList.length === 0 ? (
               <div className="h-[400px] flex flex-col items-center justify-center opacity-10">
                 <Icons.File />
-                <p className="mt-4 font-black tracking-widest uppercase">No Records</p>
+                <p className="mt-4 font-black tracking-widest uppercase">這裡什麼都沒有</p>
               </div>
             ) : (
               <table className="w-full text-left border-collapse min-w-[800px]">
                 <thead className="text-[10px] font-black text-white/30 uppercase tracking-[0.2em] bg-white/[0.03] sticky top-0 z-10 backdrop-blur-md">
                   <tr>
-                    {selectedTab === 0 && <th className="p-6 w-16 text-center">選</th>}
+                    {selectedTab === 0 && <th className="p-6 w-16 text-center">勾選</th>}
                     <th className="p-6">GSX 單號</th>
                     <th className="p-6">RMA 單號</th>
-                    <th className="p-6">SA 狀態</th>
                     <th className="p-6">GSX 狀態</th>
+                    <th className="p-6">SA 狀態</th>
                     <th className="p-6 text-center w-24">狀態</th>
                   </tr>
                 </thead>
@@ -308,10 +303,10 @@ const App = () => {
                           <a href={`https://rma0.studioarma.com/rma/?m=ticket-common&op=view&id=${r.rmaID}`} target="_blank" rel="noreferrer" className="opacity-0 group-hover:opacity-100 p-1.5 bg-white/10 rounded-lg"><Icons.External /></a>
                         </div>
                       </td>
+                      <td className="p-6 text-xs opacity-40 font-medium italic">{r.gsxStatus}</td>
                       <td className="p-6">
                         <span className={`px-3 py-1.5 rounded-xl text-xs font-bold border ${r.isAnomaly ? 'bg-orange-500/10 text-orange-400 border-orange-500/20' : 'bg-white/5 text-white/50 border-white/5'}`}>{r.saStatus}</span>
                       </td>
-                      <td className="p-6 text-xs opacity-40 font-medium italic">{r.gsxStatus}</td>
                       <td className="p-6 text-center">
                         <div className="flex justify-center">
                           {r.isAnomaly ? (
@@ -348,20 +343,56 @@ const App = () => {
   );
 };
 
-const FileBox = ({ title, fileName, onChange, icon }) => (
-  <div className="space-y-3 group">
-    <div className="flex items-center gap-2 text-[10px] font-black opacity-30 uppercase tracking-[0.2em] ml-2">
-      {icon} {title}
-    </div>
-    <div className="relative h-16">
-      <input type="file" onChange={onChange} className="absolute inset-0 opacity-0 cursor-pointer z-10" />
-      <div className={`h-full border-2 border-dashed rounded-[20px] flex items-center justify-between px-6 transition-all duration-300
-        ${fileName ? 'bg-cyan-500/5 border-cyan-500/30 shadow-inner' : 'bg-white/[0.03] border-white/10 group-hover:border-white/30 group-hover:bg-white/[0.05]'}`}>
-        <span className={`text-sm font-semibold truncate pr-4 ${fileName ? 'text-white' : 'opacity-20'}`}>{fileName || "選擇報表檔案"}</span>
-        <div className="text-[10px] font-black px-4 py-2 bg-white/10 rounded-xl border border-white/10 shadow-sm uppercase tracking-widest">Browse</div>
+const FileBox = ({ title, fileName, onChange, icon }) => {
+  const [isDragging, setIsDragging] = useState(false);
+
+  const handleDragOver = (e) => {
+    e.preventDefault();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = (e) => {
+    e.preventDefault();
+    setIsDragging(false);
+  };
+
+  const handleDrop = (e) => {
+    e.preventDefault();
+    setIsDragging(false);
+    const files = e.dataTransfer.files;
+    if (files && files.length > 0) {
+      onChange({ target: { files: files } });
+    }
+  };
+
+  return (
+    <div className="space-y-3 group">
+      <div className="flex items-center gap-2 text-[10px] font-black opacity-30 uppercase tracking-[0.2em] ml-2">
+        {icon} {title}
+      </div>
+      <div 
+        className="relative h-16"
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+      >
+        <input type="file" onChange={onChange} className="absolute inset-0 opacity-0 cursor-pointer z-10" />
+        <div className={`h-full border-2 border-dashed rounded-[20px] flex items-center justify-between px-6 transition-all duration-300
+          ${isDragging 
+            ? 'bg-cyan-500/20 border-cyan-400 scale-[1.02] shadow-xl' 
+            : (fileName ? 'bg-cyan-500/5 border-cyan-500/30 shadow-inner' : 'bg-white/[0.03] border-white/10 group-hover:border-white/30 group-hover:bg-white/[0.05]')
+          }`}>
+          <span className={`text-sm font-semibold truncate pr-4 ${fileName ? 'text-white' : 'opacity-20'}`}>
+            {isDragging ? "放開以載入檔案" : (fileName || "選擇或拖放報表檔案")}
+          </span>
+          <div className={`text-[10px] font-black px-4 py-2 rounded-xl border shadow-sm uppercase tracking-widest transition-colors
+            ${isDragging ? 'bg-cyan-500 text-white border-cyan-400' : 'bg-white/10 border-white/10'}`}>
+            {isDragging ? 'Drop' : 'Browse'}
+          </div>
+        </div>
       </div>
     </div>
-  </div>
-);
+  );
+};
 
 export default App;
