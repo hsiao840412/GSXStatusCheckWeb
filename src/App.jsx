@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useCallback } from 'react';
+import React, { useState, useMemo } from 'react';
 
 // -------------------------------------------------------------------------
 // 核心圖示 (內嵌 SVG)
@@ -21,13 +21,16 @@ const Icons = {
   ),
   Download: () => (
     <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>
+  ),
+  Clock: () => (
+    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
   )
 };
 
 // -------------------------------------------------------------------------
 // 固定常數定義
 // -------------------------------------------------------------------------
-const VERSION = "v1.1";
+const VERSION = "v1.2";
 
 // 精簡後的固定狀態
 const SA_READY_STATUS = ["抵達門市", "工程師完成"];
@@ -81,8 +84,10 @@ const App = () => {
   const [gsxFileName, setGsxFileName] = useState("");
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [statusMessage, setStatusMessage] = useState("等待選擇檔案...");
-  const [results, setResults] = useState({ unclosed: [], notReady: [], all: [] });
-  const [selectedTab, setSelectedTab] = useState(0);
+  
+  // 新增 mismatch 狀態來儲存「SA 狀態需注意」的資料
+  const [results, setResults] = useState({ unclosed: [], notReady: [], mismatch: [], all: [] });
+  const [selectedTab, setSelectedTab] = useState(0); // 0:未關單, 1:未改待取, 2:SA 狀態需注意, 3:所有
   const [selectedIDs, setSelectedIDs] = useState(new Set());
   const [toast, setToast] = useState({ show: false, message: "" });
 
@@ -156,7 +161,7 @@ const App = () => {
         return setStatusMessage(`❌ SA 報表格式錯誤 (偵測到 單號:[${rKey || "找不到"}] 狀態:[${sKey || "找不到"}])`);
       }
 
-      let un = [], nr = [], all = [], matches = 0;
+      let un = [], nr = [], mm = [], all = [], matches = 0;
       saData.forEach(sa => {
         const rma = sa[rKey], saS = sa[sKey];
         if (!rma || !saS) return;
@@ -172,36 +177,65 @@ const App = () => {
           const isGsxClosed = gsxS.includes("已由系統關閉");
           const isGsxReady = gsxS.includes("待取件");
 
-          if (SA_CLOSED_STATUS.includes(saS) && !isGsxClosed) {
-            record.isAnomaly = true; un.push(record);
+          // 判斷 GSX 邏輯
+          const saIsClosed = SA_CLOSED_STATUS.includes(saS);
+          const saIsReady = SA_READY_STATUS.includes(saS);
+          
+          // 1. 未關單：SA 顧客領回，但 GSX 沒關閉
+          if (saIsClosed && !isGsxClosed) {
+            record.isAnomaly = true; 
+            un.push(record);
           }
-          if (SA_READY_STATUS.includes(saS) && !isGsxReady && !isGsxClosed) {
-            record.isAnomaly = true; nr.push(record);
+          
+          // 2. 未改待取：SA 抵達門市/工程師完成，但 GSX 不是待取件也沒關閉
+          if (saIsReady && !isGsxReady && !isGsxClosed) {
+            record.isAnomaly = true; 
+            nr.push(record);
+          }
+
+          // 3. SA 狀態需注意：GSX 已經待取或關閉，但 SA 還在維修中 (排除：領回/抵達/完成/寄送到門市)
+          const saSafeForMismatch = [...SA_READY_STATUS, ...SA_CLOSED_STATUS, "寄送到門市"];
+          if ((isGsxReady || isGsxClosed) && !saSafeForMismatch.includes(saS)) {
+            record.isAnomaly = true;
+            mm.push(record);
           }
 
           all.push(record);
         }
       });
 
-      setResults({ unclosed: un, notReady: nr, all });
+      setResults({ unclosed: un, notReady: nr, mismatch: mm, all });
       setIsAnalyzing(false);
       setStatusMessage(`✅ 分析完成：成功匹配 ${matches} 筆數據`);
+      // 預設全選「未關單」的項目，若無則不選
       setSelectedIDs(new Set(un.map(r => r.id)));
     }, 400);
   };
 
+  // 根據當前 Tab 決定要顯示的資料
+  const currentList = useMemo(() => {
+    switch (selectedTab) {
+      case 0: return results.unclosed;
+      case 1: return results.notReady;
+      case 2: return results.mismatch;
+      default: return results.all;
+    }
+  }, [selectedTab, results]);
+
   const exportCSV = () => {
+    // 限制只能匯出「未關單」的項目
     const list = results.unclosed.filter(r => selectedIDs.has(r.id));
-    if (!list.length) return;
+    if (!list.length) return triggerToast("請先勾選要匯出的項目");
+
+    // 還原為標準 GSX Upload 格式 (僅匯出未關單用於結案)
     const csv = "\uFEFFStatus,Repair ID,Repair Status,Technician ID,Part Details,Error Message\n,repairId,repairStatus,technicianId,\"parts[number, kgbDeviceDetail.id]\",\n" + 
                 list.map(r => `,${r.gsxID},SPCM,,,`).join("\n");
+    
     const link = document.createElement("a");
     link.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }));
     link.download = `GSX_Upload_${new Date().toISOString().slice(0, 10)}.csv`;
     link.click();
   };
-
-  const currentList = selectedTab === 0 ? results.unclosed : (selectedTab === 1 ? results.notReady : results.all);
 
   return (
     <div className="min-h-screen bg-[#0F2027] text-white p-4 md:p-10 font-sans relative overflow-x-hidden selection:bg-cyan-500/30">
@@ -219,6 +253,11 @@ const App = () => {
                 <h1 className="text-3xl font-black tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-white to-white/60">GSX 狀態檢查 WEB</h1>
                 <p className="text-[10px] opacity-40 font-bold uppercase tracking-[0.3em] mt-1">{VERSION}</p>
               </div>
+            </div>
+
+            <div className="flex items-center gap-2 px-4 py-2 bg-red-500/10 border border-red-500/20 rounded-xl text-red-400 cursor-help transition-colors hover:bg-red-500/20">
+              <Icons.Alert />
+              <span className="text-xs font-bold tracking-wider">資料只會於本地端處理，不會上傳至網路</span>
             </div>
           </div>
 
@@ -241,20 +280,41 @@ const App = () => {
           </div>
         </div>
 
-        <div className="flex justify-center">
-          <div className="flex bg-black/40 p-1.5 rounded-2xl border border-white/5 backdrop-blur-md shadow-lg">
-            <button onClick={() => setSelectedTab(0)} className={`px-6 py-2.5 rounded-xl text-xs font-bold transition-all ${selectedTab === 0 ? 'bg-white/10 text-white shadow-xl' : 'text-white/30 hover:text-white/50'}`}>未關單 ({results.unclosed.length})</button>
-            <button onClick={() => setSelectedTab(1)} className={`px-6 py-2.5 rounded-xl text-xs font-bold transition-all ${selectedTab === 1 ? 'bg-white/10 text-white shadow-xl' : 'text-white/30 hover:text-white/50'}`}>未改待取 ({results.notReady.length})</button>
-            <button onClick={() => setSelectedTab(2)} className={`px-6 py-2.5 rounded-xl text-xs font-bold transition-all ${selectedTab === 2 ? 'bg-white/10 text-white shadow-xl' : 'text-white/30 hover:text-white/50'}`}>所有 ({results.all.length})</button>
+        <div className="flex justify-center overflow-x-auto pb-2">
+          <div className="flex bg-black/40 p-1.5 rounded-2xl border border-white/5 backdrop-blur-md shadow-lg whitespace-nowrap">
+            <button onClick={() => setSelectedTab(0)} className={`px-5 py-2.5 rounded-xl text-xs font-bold transition-all ${selectedTab === 0 ? 'bg-white/10 text-white shadow-xl' : 'text-white/30 hover:text-white/50'}`}>
+              未關單 ({results.unclosed.length})
+            </button>
+            <button onClick={() => setSelectedTab(1)} className={`px-5 py-2.5 rounded-xl text-xs font-bold transition-all ${selectedTab === 1 ? 'bg-white/10 text-white shadow-xl' : 'text-white/30 hover:text-white/50'}`}>
+              未改待取 ({results.notReady.length})
+            </button>
+            <button onClick={() => setSelectedTab(2)} className={`px-5 py-2.5 rounded-xl text-xs font-bold transition-all ${selectedTab === 2 ? 'bg-amber-500/20 text-amber-200 shadow-xl' : 'text-white/30 hover:text-white/50'}`}>
+              SA 狀態需注意 ({results.mismatch.length})
+            </button>
+            <button onClick={() => setSelectedTab(3)} className={`px-5 py-2.5 rounded-xl text-xs font-bold transition-all ${selectedTab === 3 ? 'bg-white/10 text-white shadow-xl' : 'text-white/30 hover:text-white/50'}`}>
+              所有 ({results.all.length})
+            </button>
           </div>
         </div>
 
         <div className="backdrop-blur-2xl bg-black/40 border border-white/10 rounded-[32px] overflow-hidden shadow-2xl flex flex-col min-h-[500px]">
+          {/* 僅在「未關單」頁面且有資料時顯示操作列 */}
           {selectedTab === 0 && currentList.length > 0 && (
-            <div className="p-5 flex justify-end border-b border-white/5 bg-white/5">
-              <button onClick={exportCSV} className="px-6 py-3 bg-emerald-500/20 border border-emerald-500/30 text-emerald-400 rounded-2xl text-xs font-black flex items-center gap-3 hover:bg-emerald-500/30 transition-all active:scale-95">
-                <Icons.Download /> 匯出清單 ({selectedIDs.size})
-              </button>
+            <div className="p-5 flex flex-col md:flex-row justify-between items-center border-b border-white/5 bg-white/5 gap-4">
+              <div className="text-xs font-medium opacity-50 pl-2">
+                已選取 <span className="text-white font-bold">{selectedIDs.size}</span> 筆資料
+              </div>
+              <div className="flex gap-2">
+                 <button onClick={() => {
+                   const allIds = new Set(currentList.map(r => r.id));
+                   setSelectedIDs(allIds);
+                 }} className="px-4 py-2 bg-white/5 hover:bg-white/10 rounded-xl text-[10px] font-bold tracking-wider transition-colors">
+                   全選本頁
+                 </button>
+                 <button onClick={exportCSV} className="px-6 py-2 bg-emerald-500/20 border border-emerald-500/30 text-emerald-400 rounded-xl text-xs font-black flex items-center gap-2 hover:bg-emerald-500/30 transition-all active:scale-95">
+                  <Icons.Download /> 匯出 GSX 多裝置上傳清單
+                </button>
+              </div>
             </div>
           )}
 
@@ -268,6 +328,7 @@ const App = () => {
               <table className="w-full text-left border-collapse min-w-[800px]">
                 <thead className="text-[10px] font-black text-white/30 uppercase tracking-[0.2em] bg-white/[0.03] sticky top-0 z-10 backdrop-blur-md">
                   <tr>
+                    {/* 僅在未關單分頁顯示勾選框 */}
                     {selectedTab === 0 && <th className="p-6 w-16 text-center">勾選</th>}
                     <th className="p-6">GSX 單號</th>
                     <th className="p-6">RMA 單號</th>
@@ -303,14 +364,16 @@ const App = () => {
                           <a href={`https://rma0.studioarma.com/rma/?m=ticket-common&op=view&id=${r.rmaID}`} target="_blank" rel="noreferrer" className="opacity-0 group-hover:opacity-100 p-1.5 bg-white/10 rounded-lg"><Icons.External /></a>
                         </div>
                       </td>
-                      <td className="p-6 text-xs opacity-40 font-medium italic">{r.gsxStatus}</td>
+                      <td className="p-6 text-xs opacity-70 font-medium italic text-cyan-200/50">{r.gsxStatus}</td>
                       <td className="p-6">
                         <span className={`px-3 py-1.5 rounded-xl text-xs font-bold border ${r.isAnomaly ? 'bg-orange-500/10 text-orange-400 border-orange-500/20' : 'bg-white/5 text-white/50 border-white/5'}`}>{r.saStatus}</span>
                       </td>
                       <td className="p-6 text-center">
                         <div className="flex justify-center">
                           {r.isAnomaly ? (
-                            <div className="text-red-500 animate-pulse"><Icons.Alert /></div>
+                            <div className={`animate-pulse ${selectedTab === 2 ? 'text-amber-400' : 'text-red-500'}`}>
+                               {selectedTab === 2 ? <Icons.Clock /> : <Icons.Alert />}
+                            </div>
                           ) : (
                             <div className="text-emerald-500/40"><Icons.Check /></div>
                           )}
