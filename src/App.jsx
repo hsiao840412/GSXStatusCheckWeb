@@ -172,7 +172,8 @@ const App = () => {
           matches++;
           const gsxS = (statusH ? gsx[statusH] : "N/A").trim();
           const gID = (idH ? gsx[idH] : "-") || "-";
-          let record = { id: Math.random().toString(36), gsxID: gID, rmaID: rma, saStatus: saS, gsxStatus: gsxS, isAnomaly: false };
+          // 加入 reason 欄位來儲存異常原因
+          let record = { id: Math.random().toString(36), gsxID: gID, rmaID: rma, saStatus: saS, gsxStatus: gsxS, isAnomaly: false, reason: "" };
 
           const isGsxClosed = gsxS.includes("已由系統關閉");
           const isGsxReady = gsxS.includes("待取件");
@@ -184,12 +185,14 @@ const App = () => {
           // 1. 未關單：SA 顧客領回，但 GSX 沒關閉
           if (saIsClosed && !isGsxClosed) {
             record.isAnomaly = true; 
+            record.reason = "SA已領回 但 GSX未關閉";
             un.push(record);
           }
           
           // 2. 未改待取：SA 抵達門市/工程師完成，但 GSX 不是待取件也沒關閉
           if (saIsReady && !isGsxReady && !isGsxClosed) {
             record.isAnomaly = true; 
+            record.reason = "SA已完修 但 GSX狀態未更新";
             nr.push(record);
           }
 
@@ -197,6 +200,7 @@ const App = () => {
           const saSafeForMismatch = [...SA_READY_STATUS, ...SA_CLOSED_STATUS, "寄送到門市"];
           if ((isGsxReady || isGsxClosed) && !saSafeForMismatch.includes(saS)) {
             record.isAnomaly = true;
+            record.reason = "GSX已完成/待取 但 SA進度落後";
             mm.push(record);
           }
 
@@ -227,7 +231,7 @@ const App = () => {
     const list = results.unclosed.filter(r => selectedIDs.has(r.id));
     if (!list.length) return triggerToast("請先勾選要匯出的項目");
 
-    // 還原為標準 GSX Upload 格式 (僅匯出未關單用於結案)
+    // 標準 GSX Upload 格式 (僅匯出未關單用於結案)
     const csv = "\uFEFFStatus,Repair ID,Repair Status,Technician ID,Part Details,Error Message\n,repairId,repairStatus,technicianId,\"parts[number, kgbDeviceDetail.id]\",\n" + 
                 list.map(r => `,${r.gsxID},SPCM,,,`).join("\n");
     
@@ -235,6 +239,13 @@ const App = () => {
     link.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }));
     link.download = `GSX_Upload_${new Date().toISOString().slice(0, 10)}.csv`;
     link.click();
+  };
+
+  // GSX 狀態的樣式輔助函式
+  const getGsxStatusStyle = (status) => {
+    if (status.includes("已由系統關閉")) return "bg-white/5 text-white/30 border-white/10";
+    if (status.includes("待取件")) return "bg-emerald-500/10 text-emerald-400 border-emerald-500/20 shadow-[0_0_10px_rgba(52,211,153,0.1)]";
+    return "bg-cyan-500/10 text-cyan-400 border-cyan-500/20";
   };
 
   return (
@@ -255,6 +266,7 @@ const App = () => {
               </div>
             </div>
 
+            {/* 安全提示 */}
             <div className="flex items-center gap-2 px-4 py-2 bg-red-500/10 border border-red-500/20 rounded-xl text-red-400 cursor-help transition-colors hover:bg-red-500/20">
               <Icons.Alert />
               <span className="text-xs font-bold tracking-wider">資料只會於本地端處理，不會上傳至網路</span>
@@ -364,14 +376,19 @@ const App = () => {
                           <a href={`https://rma0.studioarma.com/rma/?m=ticket-common&op=view&id=${r.rmaID}`} target="_blank" rel="noreferrer" className="opacity-0 group-hover:opacity-100 p-1.5 bg-white/10 rounded-lg"><Icons.External /></a>
                         </div>
                       </td>
-                      <td className="p-6 text-xs opacity-70 font-medium italic text-cyan-200/50">{r.gsxStatus}</td>
+                      <td className="p-6">
+                        {/* 美化後的 GSX 狀態 Badge */}
+                        <span className={`px-3 py-1.5 rounded-xl text-xs font-bold border inline-block ${getGsxStatusStyle(r.gsxStatus)}`}>
+                          {r.gsxStatus}
+                        </span>
+                      </td>
                       <td className="p-6">
                         <span className={`px-3 py-1.5 rounded-xl text-xs font-bold border ${r.isAnomaly ? 'bg-orange-500/10 text-orange-400 border-orange-500/20' : 'bg-white/5 text-white/50 border-white/5'}`}>{r.saStatus}</span>
                       </td>
                       <td className="p-6 text-center">
-                        <div className="flex justify-center">
+                        <div className="flex justify-center" title={r.reason}>
                           {r.isAnomaly ? (
-                            <div className={`animate-pulse ${selectedTab === 2 ? 'text-amber-400' : 'text-red-500'}`}>
+                            <div className={`cursor-help animate-pulse ${selectedTab === 2 ? 'text-amber-400' : 'text-red-500'}`}>
                                {selectedTab === 2 ? <Icons.Clock /> : <Icons.Alert />}
                             </div>
                           ) : (
